@@ -13,7 +13,7 @@ st.set_page_config(
 
 # Load data
 def load_data():
-    df = pd.read_csv("data/final_streamlit_dataset.csv")
+    df = pd.read_csv("Data/final_streamlit_dataset.csv")
 
     # Manipulate the date column to extract yyyy & mm
     df["date"] = df["date"].astype(str)
