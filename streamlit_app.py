@@ -15,6 +15,12 @@ st.set_page_config(
 def load_data():
     df = pd.read_csv("Data/final_streamlit_dataset.csv")
 
+    # Round views to the nearest integer
+    df["views"] = df["views"].round(0).astype(int)
+
+    # Remove characters/spaces from names
+    df["name"] = df["name"].str.replace("_", " ", regex=False)
+
     # Manipulate the date column to extract yyyy & mm
     df["date"] = df["date"].astype(str)
     df["year"] = df["date"].str[:4].astype(int)
@@ -105,10 +111,62 @@ with col2:
 with col3:
     st.metric("Total observations", len(df))
 
+# Filter the dataset by name/citizenship/field of work
 preview_data = st.toggle("Data Preview")
 if preview_data:
-    rows = st.slider("View rows", 0, 1000, 10)
-    st.dataframe(df_filtered.head(rows))
+    st.subheader("Explore the Dataset")
+
+    col_a, col_b, col_c = st.columns(3)
+
+    with col_a:
+        name_filter = st.text_input("Filter by name")
+
+    with col_b:
+        country_filter = st.selectbox(
+            "Filter by citizenship",
+            ["All"] + sorted(df["citizenship"].dropna().unique())
+        )
+
+    with col_c:
+        field_filter = st.selectbox(
+            "Filter by economic field",
+            ["All"] + sorted(df["econ_field_pred"].dropna().unique())
+        )
+
+    preview_df = df_filtered.copy()
+
+    if name_filter:
+        preview_df = preview_df[
+            preview_df["name"].str.contains(name_filter, case=False)
+        ]
+
+    if country_filter != "All":
+        preview_df = preview_df[preview_df["citizenship"] == country_filter]
+
+    if field_filter != "All":
+        preview_df = preview_df[
+            preview_df["econ_field_pred"] == field_filter
+        ]
+
+    rows = st.slider("Rows to display", 10, 1000, 50)
+    st.dataframe(preview_df.head(rows))
+
+
+# Over view of unique entries in the dataset
+st.header("Economists in the Dataset")
+
+st.markdown("""
+This table provides a clean overview of the economists included in the dataset,
+without repeated monthly observations.
+""")
+
+people_df = (
+    df[["qid", "name", "citizenship", "birth_year"]]
+    .drop_duplicates()
+    .sort_values("name")
+)
+
+st.dataframe(people_df, use_container_width=True)
 
 
 # Overall Attention Over Time
@@ -175,6 +233,7 @@ aligned = (
     .groupby("years_from_nobel", as_index=False)["views"]
     .mean()
 )
+aligned = aligned.round(0)
 
 fig_align = px.line(
     aligned,
@@ -203,15 +262,81 @@ pivot = (
         aggfunc="mean"
     )
 )
+pivot = pivot.round(0)
 
 fig_heat = px.imshow(
     pivot,
     aspect="auto",
     color_continuous_scale="Viridis",
+    labels=dict(
+        x="Years From Nobel",
+        y="Economist",
+        color="Avg Monthly Views"
+    ),
     title="Heatmap of Attention Around Nobel Prize"
 )
 
+fig_heat.update_traces(
+    hovertemplate=
+    "Economist: %{y}<br>" +
+    "Years from Nobel: %{x}<br>" +
+    "Avg Views: %{z:,.0f}<extra></extra>"
+)
+
 st.plotly_chart(fig_heat, use_container_width=True)
+
+
+# Heat map for nobel winners ordered by winning date
+st.header("Nobel Winners Ordered by Award Year")
+
+nobel_only = df[df["is_nobel"] == True].copy()
+
+nobel_meta = (
+    nobel_only[["qid", "name", "nobel_year"]]
+    .drop_duplicates()
+    .sort_values("nobel_year")
+)
+
+# Aggregate views by calendar year
+nobel_yearly = (
+    nobel_only
+    .groupby(["name", "year"], as_index=False)
+    .agg(avg_views=("views", "mean"))
+)
+
+pivot_calendar = (
+    nobel_yearly
+    .pivot_table(
+        index="name",
+        columns="year",
+        values="avg_views",
+        aggfunc="mean"
+    )
+    .round(0)
+)
+
+pivot_calendar = pivot_calendar.loc[nobel_meta["name"]]
+
+fig_calendar = px.imshow(
+    pivot_calendar,
+    aspect="auto",
+    color_continuous_scale="Viridis",
+    labels=dict(
+        x="Calendar Year",
+        y="Nobel Laureate (Ordered by Nobel Year)",
+        color="Avg Monthly Views"
+    ),
+    title="Wikipedia Attention to Nobel Economists by Calendar Year"
+)
+
+fig_calendar.update_traces(
+    hovertemplate=
+    "Economist: %{y}<br>" +
+    "Year: %{x}<br>" +
+    "Avg Views: %{z:,.0f}<extra></extra>"
+)
+
+st.plotly_chart(fig_calendar, use_container_width=True)
 
 
 # Age vs Attention
@@ -313,11 +438,15 @@ st.plotly_chart(fig, use_container_width=True)
 # Nobel Prediction Reflection
 st.header("Can Pageviews Predict Nobel Winners?")
 
-st.markdown(""" I attempted to predict Nobel winners using pageview-based features. 
-            While overall accuracy was high due to class imbalance, **ROC AUC was close
-            to random**, showing that **Wikipedia attention alone is a weak predictor
-            of Nobel outcomes**. This highlights the limits of popularity-based metrics when modeling
-            academic recognition.""")
+st.markdown(""" To explore whether Wikipedia attention could predict future Nobel 
+            recognition, I built a supervised classification model using pre-award 
+            pageview behavior. For Nobel winners, I restricted the data to the 36 months 
+            before the award, while for non-Nobel economists I sampled a comparable recent 
+            time window. From this data, I calculated summary features such as average,
+            median, maximum, total, and volatility of monthly pageviews, as well as a 
+            simple growth-rate measure capturing changes in attention over time. 
+            These features were standardized and used to train a logistic regression 
+            model with class balancing to account for the extreme rarity of Nobel winners.""")
 
 image_path = 'Images/Table.png'
 st.image(
@@ -325,6 +454,14 @@ st.image(
    caption='Prediction Model Results',
    width=400
 )
+
+st.markdown("""While the model achieved a high overall accuracy (97%), this result is 
+            misleading due to severe class imbalance: almost all economists are non-Nobel 
+            winners.  The model correctly identified 2 out of 5 Nobel winners in the 
+            test set (recall = 0.40), but with low precision (0.22), meaning many 
+            economists with high attention were incorrectly flagged as potential Nobel 
+            winners. The ROC AUC score of 0.53, only slightly above random guessing, 
+            confirms that pageviews alone provide very weak predictive signals for Nobel outcomes.""")
 
 
 # Ethics & Limitations
